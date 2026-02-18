@@ -24,7 +24,9 @@ void app_main(void)
     pulse_engine_init(0);
 
     // Test: 10 pulses, 100 ms HIGH, 100 ms LOW (v1)
-    pulse_engine_request((pulse_req_t){ .count = 10, .pulse_ms = 100 });
+    pulse_rc_t rc = pulse_engine_request((pulse_req_t){ .count = 10, .pulse_ms = 100 });
+    ESP_LOGI(TAG, "request rc=%d busy=%d", rc, pulse_engine_is_busy());
+
 
     ESP_LOGI(TAG, "Pulse test requested (GPIO0)");
 }

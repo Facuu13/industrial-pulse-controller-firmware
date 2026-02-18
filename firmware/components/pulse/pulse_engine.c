@@ -8,6 +8,8 @@
 #include "driver/gptimer.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_timer.h"
+
 
 static const char *TAG = "PULSE";
 
@@ -19,6 +21,16 @@ static int s_gpio = -1;
 static volatile bool s_level_high = false;
 static volatile uint32_t s_pulses_left = 0;
 static volatile uint32_t s_half_period_us = 0; // HIGH duration == LOW duration (v1)
+
+
+static volatile bool s_busy = false;
+static volatile bool s_done_isr = false;
+
+static uint32_t s_req_count = 0;
+static int64_t s_start_us = 0;
+
+static pulse_done_cb_t s_done_cb = NULL;
+
 
 static bool IRAM_ATTR on_timer_alarm(gptimer_handle_t timer,
                                      const gptimer_alarm_event_data_t *edata,
@@ -33,7 +45,10 @@ static bool IRAM_ATTR on_timer_alarm(gptimer_handle_t timer,
         if (s_pulses_left == 0) {
             gptimer_stop(timer);
             gpio_set_level(s_gpio, 0);
+            s_done_isr = true;     // <- señal para la task
+            s_busy = false;        // <- ya no está ocupado
         }
+
     }
     return false;
 }
@@ -43,7 +58,28 @@ static void pulse_task(void *arg)
     pulse_req_t req;
 
     while (1) {
-        if (xQueueReceive(s_q, &req, portMAX_DELAY) == pdTRUE) {
+
+        // 1) Si terminó (flag seteado por ISR), reportamos desde la task
+        if (s_done_isr) {
+            s_done_isr = false;
+
+            int64_t end_us = esp_timer_get_time();
+            pulse_done_t done = {
+                .pulses_done = s_req_count,
+                .elapsed_ms = (uint32_t)((end_us - s_start_us) / 1000),
+            };
+
+            ESP_LOGI(TAG, "DONE: pulses=%lu elapsed=%lums",
+                     (unsigned long)done.pulses_done,
+                     (unsigned long)done.elapsed_ms);
+
+            if (s_done_cb) {
+                s_done_cb(done);
+            }
+        }
+
+        // 2) Esperamos un request (pero no bloqueamos “para siempre”, así podemos reportar DONE)
+        if (xQueueReceive(s_q, &req, pdMS_TO_TICKS(10)) == pdTRUE) {
 
             if (req.count == 0) continue;
 
@@ -51,10 +87,24 @@ static void pulse_task(void *arg)
             if (req.pulse_ms < 30) req.pulse_ms = 30;
             if (req.pulse_ms > 300) req.pulse_ms = 300;
 
+            // Política v1: si está ocupado, ignoramos el nuevo request
+            // (más adelante podemos encolar o devolver BUSY desde pulse_engine_request)
+            if (s_busy) {
+                ESP_LOGW(TAG, "BUSY: ignoring request count=%lu",
+                         (unsigned long)req.count);
+                continue;
+            }
+
             s_half_period_us = req.pulse_ms * 1000UL;
             s_pulses_left = req.count;
             s_level_high = false;
             gpio_set_level(s_gpio, 0);
+
+            // Para medir duración total
+            s_req_count = req.count;
+            s_start_us = esp_timer_get_time();
+            s_busy = true;
+            s_done_isr = false;
 
             ESP_LOGI(TAG, "Start: count=%lu pulse_ms=%lu",
                      (unsigned long)req.count, (unsigned long)req.pulse_ms);
@@ -69,8 +119,12 @@ static void pulse_task(void *arg)
             ESP_ERROR_CHECK(gptimer_set_raw_count(s_tmr, 0));
             ESP_ERROR_CHECK(gptimer_start(s_tmr));
         }
+
+        // 3) Pequeño respiro (ya estamos haciendo 10ms en receive, pero lo dejamos implícito)
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
+
 
 bool pulse_engine_init(int gpio_out)
 {
@@ -108,8 +162,24 @@ bool pulse_engine_init(int gpio_out)
     return true;
 }
 
-bool pulse_engine_request(pulse_req_t req)
+
+bool pulse_engine_is_busy(void)
 {
-    if (!s_q) return false;
-    return xQueueSend(s_q, &req, 0) == pdTRUE;
+    return s_busy;
+}
+
+void pulse_engine_set_done_cb(pulse_done_cb_t cb)
+{
+    s_done_cb = cb;
+}
+
+pulse_rc_t pulse_engine_request(pulse_req_t req)
+{
+    if (!s_q) return PULSE_ERR_NOT_INIT;
+
+    // Política v1: si está ocupado, rechazamos
+    if (s_busy) return PULSE_ERR_BUSY;
+
+    if (xQueueSend(s_q, &req, 0) != pdTRUE) return PULSE_ERR_QUEUE_FULL;
+    return PULSE_OK;
 }
