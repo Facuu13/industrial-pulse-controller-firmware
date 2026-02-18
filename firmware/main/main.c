@@ -3,6 +3,8 @@
 #include "esp_chip_info.h"
 #include "esp_timer.h"
 
+#include "pulse_engine.h"
+
 static const char *TAG = "BOOT";
 
 void app_main(void)
@@ -14,7 +16,15 @@ void app_main(void)
     ESP_LOGI(TAG, "Industrial Pulse Controller");
     ESP_LOGI(TAG, "ESP32-C3 - ESP-IDF v5.5.1");
     ESP_LOGI(TAG, "Cores: %d", chip_info.cores);
-    ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
-    ESP_LOGI(TAG, "Time since boot: %llu us", esp_timer_get_time());
+    ESP_LOGI(TAG, "Free heap: %lu bytes", (unsigned long)esp_get_free_heap_size());
+    ESP_LOGI(TAG, "Time since boot: %llu us", (unsigned long long)esp_timer_get_time());
     ESP_LOGI(TAG, "==============================");
+
+    // Init pulse engine on GPIO0
+    pulse_engine_init(0);
+
+    // Test: 10 pulses, 100 ms HIGH, 100 ms LOW (v1)
+    pulse_engine_request((pulse_req_t){ .count = 10, .pulse_ms = 100 });
+
+    ESP_LOGI(TAG, "Pulse test requested (GPIO2)");
 }
