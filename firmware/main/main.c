@@ -26,5 +26,5 @@ void app_main(void)
     // Test: 10 pulses, 100 ms HIGH, 100 ms LOW (v1)
     pulse_engine_request((pulse_req_t){ .count = 10, .pulse_ms = 100 });
 
-    ESP_LOGI(TAG, "Pulse test requested (GPIO2)");
+    ESP_LOGI(TAG, "Pulse test requested (GPIO0)");
 }
